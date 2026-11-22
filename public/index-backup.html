@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>E-Commerce and Inventory Management System</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 24px auto; padding: 0 16px; color: #111; }
+    header, .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .box { border: 1px solid #ddd; padding: 14px; border-radius: 6px; margin-bottom: 16px; }
+    input, select, button { padding: 7px 10px; border: 1px solid #ccc; border-radius: 4px; }
+    button { background: #111; color: #fff; cursor: pointer; border: none; }
+    button.alt { background: #eee; color: #111; border: 1px solid #ccc; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align: left; }
+    .hidden { display: none !important; }
+    #log { background: #f8f8f8; padding: 8px; font-size: 0.85rem; border-left: 3px solid #111; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+
+  <!-- LOGIN / REGISTER -->
+  <div id="authView" class="box" style="max-width: 360px; margin: 80px auto;">
+    <h2 id="authTitle">E-Commerce and Inventory Management System — Login</h2>
+    <form onsubmit="auth(event)">
+      <p id="nameRow" class="hidden"><input id="uName" placeholder="Full Name" style="width:100%" /></p>
+      <p><input id="uEmail" type="email" placeholder="Email" required style="width:100%" /></p>
+      <p><input id="uPass" type="password" placeholder="Password" required style="width:100%" /></p>
+      <p id="roleRow" class="hidden">
+        <select id="uRole" style="width:100%"><option value="customer">Customer</option><option value="seller">Seller</option></select>
+      </p>
+      <button type="submit" style="width:100%">Continue</button>
+    </form>
+    <p style="font-size:0.85rem; margin-top:10px;"><a href="#" onclick="toggleMode(event)" id="modeLink">Register new account</a></p>
+  </div>
+
+  <!-- APP -->
+  <div id="appView" class="hidden">
+    <header class="box">
+      <div><strong>E-Commerce and Inventory Management System</strong> — <span id="userLabel"></span></div>
+      <div>
+        <button class="alt" onclick="rename()">Rename</button>
+        <button class="alt" onclick="logout()">Logout</button>
+      </div>
+    </header>
+
+    <div id="log">Socket.IO: Waiting for live events...</div>
+
+    <!-- CUSTOMER SECTION -->
+    <div id="custView" class="hidden">
+      <div class="box">
+        <div class="row">
+          <h3>Products</h3>
+          <input id="q" placeholder="Search..." oninput="loadProducts()" />
+        </div>
+        <table><thead><tr><th>Name</th><th>Category</th><th>Price</th><th>Stock</th><th></th></tr></thead><tbody id="prodRows"></tbody></table>
+      </div>
+
+      <div class="box">
+        <div class="row"><h3>Cart (<span id="cartTotal">₹0</span>)</h3></div>
+        <table><thead><tr><th>Item</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead><tbody id="cartRows"></tbody></table>
+        <div class="row" style="margin-top:10px;">
+          <input id="addr" value="Hostel Block B, Gurugram" style="flex:1" />
+          <button onclick="checkout()">Place Order</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ADMIN / SELLER SECTION -->
+    <div id="adminView" class="hidden">
+      <div class="box">
+        <h3>Add Product</h3>
+        <form onsubmit="addProduct(event)" class="row">
+          <input id="pName" placeholder="Name" required />
+          <input id="pDesc" placeholder="Description" required />
+          <input id="pPrice" type="number" placeholder="Price (₹)" required />
+          <input id="pStock" type="number" placeholder="Stock" required />
+          <select id="pCat"></select>
+          <button type="submit">Add</button>
+        </form>
+        <table><thead><tr><th>Product</th><th>Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody id="invRows"></tbody></table>
+      </div>
+
+      <div class="box">
+        <h3>Aggregation Reports</h3>
+        <pre id="reportOut" style="font-size:0.8rem; overflow:auto;"></pre>
+      </div>
+    </div>
+
+    <!-- SHARED ORDERS -->
+    <div class="box">
+      <h3>Orders</h3>
+      <table><thead><tr><th>ID</th><th>Items</th><th>Total</th><th>Status</th><th>Action</th></tr></thead><tbody id="orderRows"></tbody></table>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    let token = localStorage.getItem('token') || '';
+    let user = JSON.parse(localStorage.getItem('user') || 'null');
+    let isReg = false;
+    const inr = n => '₹' + Number(n || 0).toLocaleString('en-IN');
+
+    const socket = io({ auth: { token } });
+    socket.on('orderNotification', d => { log(`Order #${d.orderId.slice(-6)} -> ${d.status}`); refresh(); });
+    socket.on('lowStockAlert', d => { log(`LOW STOCK: ${d.name} (${d.remainingStock} left)`); refresh(); });
+    const log = msg => document.getElementById('log').textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+
+    async function api(url, opts = {}) {
+      const res = await fetch(url, {
+        ...opts,
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message);
+      return data;
+    }
+
+    function toggleMode(e) {
+      e.preventDefault(); isReg = !isReg;
+      authTitle.textContent = isReg ? 'E-Commerce and Inventory Management System — Register' : 'E-Commerce and Inventory Management System — Login';
+      modeLink.textContent = isReg ? 'Back to Login' : 'Register new account';
+      nameRow.classList.toggle('hidden', !isReg);
+      roleRow.classList.toggle('hidden', !isReg);
+    }
+
+    async function auth(e) {
+      e.preventDefault();
+      try {
+        const body = isReg
+          ? { name: uName.value, email: uEmail.value, password: uPass.value, role: uRole.value }
+          : { email: uEmail.value, password: uPass.value };
+        const res = await api(isReg ? '/api/auth/register' : '/api/auth/login', { method: 'POST', body: JSON.stringify(body) });
+        token = res.accessToken; user = res.data;
+        localStorage.setItem('token', token); localStorage.setItem('user', JSON.stringify(user));
+        boot();
+      } catch (err) { alert(err.message); }
+    }
+
+    function logout() { localStorage.clear(); token = ''; user = null; boot(); }
+
+    async function rename() {
+      const name = prompt('New name:', user.name);
+      if (!name) return;
+      const res = await api('/api/auth/me', { method: 'PATCH', body: JSON.stringify({ name }) });
+      user.name = res.data.name; localStorage.setItem('user', JSON.stringify(user)); boot();
+    }
+
+    async function boot() {
+      authView.classList.toggle('hidden', !!user);
+      appView.classList.toggle('hidden', !user);
+      if (!user) return;
+      userLabel.textContent = `${user.name} (${user.role})`;
+      custView.classList.toggle('hidden', user.role !== 'customer');
+      adminView.classList.toggle('hidden', user.role === 'customer');
+      const cats = await api('/api/products/categories');
+      pCat.innerHTML = cats.data.map(c => `<option value="${c._id}">${c.name}</option>`).join('');
+      refresh();
+    }
+
+    async function refresh() {
+      if (!user) return;
+      await loadProducts();
+      await loadOrders();
+      if (user.role === 'customer') await loadCart();
+      else {
+        const [sales, inv] = await Promise.all([api('/api/reports/sales'), api('/api/reports/inventory')]);
+        reportOut.textContent = JSON.stringify({ sales: sales.data, inventory: inv.data }, null, 2);
+      }
+    }
+
+    async function loadProducts() {
+      const res = await api(`/api/products?search=${encodeURIComponent(q?.value || '')}&limit=50`);
+      prodRows.innerHTML = res.data.map(p => `<tr>
+        <td>${p.name}</td><td>${p.category?.name || ''}</td><td>${inr(p.price)}</td><td>${p.stock}</td>
+        <td><button onclick="addCart('${p._id}')" ${p.stock < 1 ? 'disabled' : ''}>Add</button></td>
+      </tr>`).join('');
+
+      invRows.innerHTML = res.data.map(p => `<tr>
+        <td>${p.name}</td><td>${inr(p.price)}</td><td>${p.stock}</td>
+        <td>
+          <button onclick="restock('${p._id}', ${p.stock})">+ Restock</button>
+          <button class="alt" onclick="delProd('${p._id}')">Delete</button>
+        </td>
+      </tr>`).join('');
+    }
+
+    async function addProduct(e) {
+      e.preventDefault();
+      await api('/api/products', { method: 'POST', body: JSON.stringify({
+        name: pName.value, description: pDesc.value, price: +pPrice.value, stock: +pStock.value, category: pCat.value
+      })});
+      e.target.reset(); refresh();
+    }
+
+    async function restock(id, cur) {
+      const add = +prompt('Units to add:', 10);
+      if (add > 0) { await api(`/api/products/${id}`, { method: 'PATCH', body: JSON.stringify({ stock: cur + add }) }); refresh(); }
+    }
+
+    async function delProd(id) { await api(`/api/products/${id}`, { method: 'DELETE' }); refresh(); }
+
+    async function loadCart() {
+      const res = await api('/api/cart');
+      cartTotal.textContent = inr(res.totalAmount);
+      cartRows.innerHTML = res.data.items.map(i => `<tr>
+        <td>${i.product.name}</td><td>${i.quantity}</td><td>${inr(i.product.price * i.quantity)}</td>
+        <td><button class="alt" onclick="rmCart('${i.product._id}')">Remove</button></td>
+      </tr>`).join('');
+    }
+
+    async function addCart(productId) { await api('/api/cart', { method: 'POST', body: JSON.stringify({ productId, quantity: 1 }) }); loadCart(); }
+    async function rmCart(id) { await api(`/api/cart/${id}`, { method: 'DELETE' }); loadCart(); }
+    async function checkout() {
+      try { await api('/api/orders', { method: 'POST', body: JSON.stringify({ shippingAddress: addr.value }) }); refresh(); }
+      catch (err) { alert(err.message); }
+    }
+
+    async function loadOrders() {
+      const res = await api(user.role === 'customer' ? '/api/orders/my' : '/api/orders');
+      orderRows.innerHTML = res.data.map(o => `<tr>
+        <td>#${o._id.slice(-6)}</td>
+        <td>${o.items.map(i => `${i.name} x${i.quantity}`).join(', ')}</td>
+        <td>${inr(o.totalAmount)}</td><td>${o.status}</td>
+        <td>${user.role === 'customer' && o.status === 'Pending'
+          ? `<button class="alt" onclick="setStatus('${o._id}','Cancelled')">Cancel</button>`
+          : user.role !== 'customer' && !['Delivered','Cancelled'].includes(o.status)
+            ? `<select onchange="setStatus('${o._id}',this.value)"><option value="">Move to...</option><option>Confirmed</option><option>Shipped</option><option>Delivered</option><option>Cancelled</option></select>`
+            : '—'}</td>
+      </tr>`).join('');
+    }
+
+    async function setStatus(id, status) {
+      if (!status) return;
+      try { await api(`/api/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }); refresh(); }
+      catch (err) { alert(err.message); }
+    }
+
+    boot();
+  </script>
+</body>
+</html>
